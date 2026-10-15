@@ -72,6 +72,13 @@ protected:
 	MTL::Device *device = nullptr;
 
 	uint32_t _frame_count = 1;
+	// Stellaro: GPU timestamps (counter sample buffers), their ticks to nanoseconds measured
+	// against the CPU's clock.
+	bool _timestamps_supported = false;
+	double _timestamp_ns_per_tick = 1.0;
+	uint64_t _timestamp_cpu0 = 0;
+	uint64_t _timestamp_gpu0 = 0;
+	void _calibrate_timestamps();
 	/// frame_index is a cyclic counter derived from the current frame number modulo frame_count,
 	/// cycling through values from 0 to frame_count - 1
 	uint32_t _frame_index = 0;

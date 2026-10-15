@@ -572,6 +572,7 @@ public:
 
 	void begin_label(const char *p_label_name, const Color &p_color) override;
 	void end_label() override;
+	void sample_timestamp(MTL::CounterSampleBuffer *p_buffer, uint32_t p_index) override;
 
 	MDCommandBuffer(MTL::CommandQueue *p_queue, ::RenderingDeviceDriverMetal *p_device_driver);
 	MDCommandBuffer() = default;

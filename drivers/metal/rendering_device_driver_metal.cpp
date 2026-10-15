@@ -48,6 +48,7 @@
 /* permissions and limitations under the License.                         */
 /**************************************************************************/
 
+#include <mach/mach_time.h>
 #include "rendering_device_driver_metal.h"
 
 #include "core/config/engine.h"
@@ -2331,27 +2332,111 @@ void RenderingDeviceDriverMetal::command_trace_rays(CommandBufferID p_cmd_buffer
 #pragma mark - Queries
 
 // ----- TIMESTAMP -----
+// Stellaro: real GPU timestamps through Metal's counter sample buffers (the timestamp counter
+// set, sampled at pass boundaries as Apple GPUs allow); where the GPU has none, zeros as before.
+
+struct MetalTimestampPool {
+	NS::SharedPtr<MTL::CounterSampleBuffer> buffer;
+	uint32_t count = 0;
+};
+
+static MTL::CounterSet *_timestamp_counter_set(MTL::Device *p_device) {
+	NS::Array *sets = p_device->counterSets();
+	if (sets == nullptr) {
+		return nullptr;
+	}
+	for (NS::UInteger i = 0; i < sets->count(); i++) {
+		MTL::CounterSet *set = sets->object<MTL::CounterSet>(i);
+		if (set->name()->isEqualToString(MTL::CommonCounterSetTimestamp)) {
+			return set;
+		}
+	}
+	return nullptr;
+}
+
+void RenderingDeviceDriverMetal::_calibrate_timestamps() {
+	MTL::Timestamp cpu = 0, gpu = 0;
+	device->sampleTimestamps(&cpu, &gpu);
+	if (_timestamp_cpu0 == 0) {
+		_timestamp_cpu0 = cpu;
+		_timestamp_gpu0 = gpu;
+		return;
+	}
+	if (gpu > _timestamp_gpu0 + 1000000 && cpu > _timestamp_cpu0) {
+		// the CPU's ticks are mach_absolute_time's
+		mach_timebase_info_data_t tb;
+		mach_timebase_info(&tb);
+		double cpu_ns = double(cpu - _timestamp_cpu0) * double(tb.numer) / double(tb.denom);
+		_timestamp_ns_per_tick = cpu_ns / double(gpu - _timestamp_gpu0);
+	}
+}
 
 RDD::QueryPoolID RenderingDeviceDriverMetal::timestamp_query_pool_create(uint32_t p_query_count) {
-	return QueryPoolID(1);
+	MTL::CounterSet *set = device->supportsCounterSampling(MTL::CounterSamplingPointAtStageBoundary) ? _timestamp_counter_set(device) : nullptr;
+	if (set == nullptr || p_query_count == 0) {
+		return QueryPoolID(1);
+	}
+	MTL::CounterSampleBufferDescriptor *desc = MTL::CounterSampleBufferDescriptor::alloc()->init();
+	desc->setCounterSet(set);
+	desc->setStorageMode(MTL::StorageModeShared);
+	desc->setSampleCount(p_query_count);
+	NS::Error *error = nullptr;
+	MTL::CounterSampleBuffer *buffer = device->newCounterSampleBuffer(desc, &error);
+	desc->release();
+	if (buffer == nullptr) {
+		return QueryPoolID(1);
+	}
+	MetalTimestampPool *pool = memnew(MetalTimestampPool);
+	pool->buffer = NS::TransferPtr(buffer);
+	pool->count = p_query_count;
+	_timestamps_supported = true;
+	_calibrate_timestamps();
+	return QueryPoolID(pool);
 }
 
 void RenderingDeviceDriverMetal::timestamp_query_pool_free(QueryPoolID p_pool_id) {
+	if (p_pool_id.id == 1) {
+		return;
+	}
+	memdelete((MetalTimestampPool *)p_pool_id.id);
 }
 
 void RenderingDeviceDriverMetal::timestamp_query_pool_get_results(QueryPoolID p_pool_id, uint32_t p_query_count, uint64_t *r_results) {
-	// Metal doesn't support timestamp queries, so we just clear the buffer.
 	bzero(r_results, p_query_count * sizeof(uint64_t));
+	if (p_pool_id.id == 1 || p_query_count == 0) {
+		return;
+	}
+	MetalTimestampPool *pool = (MetalTimestampPool *)p_pool_id.id;
+	uint32_t count = MIN(p_query_count, pool->count);
+	NS::Data *data = pool->buffer->resolveCounterRange(NS::Range::Make(0, count));
+	if (data == nullptr) {
+		return;
+	}
+	const MTL::CounterResultTimestamp *values = (const MTL::CounterResultTimestamp *)data->mutableBytes();
+	uint32_t got = MIN(count, uint32_t(data->length() / sizeof(MTL::CounterResultTimestamp)));
+	for (uint32_t i = 0; i < got; i++) {
+		r_results[i] = values[i].timestamp == MTL::CounterErrorValue ? 0 : values[i].timestamp;
+	}
+	_calibrate_timestamps();
 }
 
 uint64_t RenderingDeviceDriverMetal::timestamp_query_result_to_time(uint64_t p_result) {
-	return p_result;
+	return uint64_t(double(p_result) * _timestamp_ns_per_tick);
 }
 
 void RenderingDeviceDriverMetal::command_timestamp_query_pool_reset(CommandBufferID p_cmd_buffer, QueryPoolID p_pool_id, uint32_t p_query_count) {
 }
 
 void RenderingDeviceDriverMetal::command_timestamp_write(CommandBufferID p_cmd_buffer, QueryPoolID p_pool_id, uint32_t p_index) {
+	if (p_pool_id.id == 1) {
+		return;
+	}
+	MetalTimestampPool *pool = (MetalTimestampPool *)p_pool_id.id;
+	if (p_index >= pool->count) {
+		return;
+	}
+	MDCommandBufferBase *cb = (MDCommandBufferBase *)(p_cmd_buffer.id);
+	cb->sample_timestamp(pool->buffer.get(), p_index);
 }
 
 #pragma mark - Labels
