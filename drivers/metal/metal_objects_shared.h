@@ -752,7 +752,7 @@ public:
 	virtual void end_label() = 0;
 
 	// Stellaro: a GPU timestamp into p_buffer at p_index (an empty blit pass sampled at its start).
-	virtual void sample_timestamp(MTL::CounterSampleBuffer *p_buffer, uint32_t p_index) {}
+	virtual void sample_timestamp(MTL::CounterSampleBuffer *p_buffer, uint32_t p_index, MTL::Buffer *p_scratch) {}
 };
 
 #pragma mark - Uniform Types

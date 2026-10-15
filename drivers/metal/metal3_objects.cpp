@@ -99,9 +99,10 @@ MDCommandBuffer::Alloc MDCommandBuffer::allocate_arg_buffer(uint32_t p_size) {
 	return _scratch.allocate(p_size);
 }
 
-void MDCommandBuffer::sample_timestamp(MTL::CounterSampleBuffer *p_buffer, uint32_t p_index) {
-	// Apple GPUs sample counters at pass boundaries only: the open encoder is closed, and an
-	// empty blit pass samples the timestamp as it starts.
+void MDCommandBuffer::sample_timestamp(MTL::CounterSampleBuffer *p_buffer, uint32_t p_index, MTL::Buffer *p_scratch) {
+	// Apple GPUs sample counters at pass boundaries only: the open encoder is closed, and a
+	// tiny blit pass (a few bytes filled: an empty one may be skipped, and its sample with it)
+	// samples the timestamp as it starts.
 	end();
 	MTL::BlitPassDescriptor *desc = MTL::BlitPassDescriptor::blitPassDescriptor();
 	MTL::BlitPassSampleBufferAttachmentDescriptor *att = desc->sampleBufferAttachments()->object(0);
@@ -109,6 +110,9 @@ void MDCommandBuffer::sample_timestamp(MTL::CounterSampleBuffer *p_buffer, uint3
 	att->setStartOfEncoderSampleIndex(p_index);
 	att->setEndOfEncoderSampleIndex(MTL::CounterDontSample);
 	MTL::BlitCommandEncoder *enc = command_buffer()->blitCommandEncoder(desc);
+	if (p_scratch) {
+		enc->fillBuffer(p_scratch, NS::Range::Make(0, 4), 0);
+	}
 	enc->endEncoding();
 }
 

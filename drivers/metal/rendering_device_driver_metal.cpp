@@ -2355,6 +2355,12 @@ static MTL::CounterSet *_timestamp_counter_set(MTL::Device *p_device) {
 }
 
 void RenderingDeviceDriverMetal::_calibrate_timestamps() {
+	// (Apple GPUs' counter samples are nanoseconds already, though sampleTimestamps gives
+	// their 24 MHz ticks: calibrating against those would make every span ~41x too long)
+	if (device->supportsFamily(MTL::GPUFamilyApple7)) {
+		_timestamp_ns_per_tick = 1.0;
+		return;
+	}
 	MTL::Timestamp cpu = 0, gpu = 0;
 	device->sampleTimestamps(&cpu, &gpu);
 	if (_timestamp_cpu0 == 0) {
@@ -2386,6 +2392,9 @@ RDD::QueryPoolID RenderingDeviceDriverMetal::timestamp_query_pool_create(uint32_
 	if (buffer == nullptr) {
 		return QueryPoolID(1);
 	}
+	if (!_timestamp_scratch) {
+		_timestamp_scratch = NS::TransferPtr(device->newBuffer(16, MTL::ResourceStorageModePrivate));
+	}
 	MetalTimestampPool *pool = memnew(MetalTimestampPool);
 	pool->buffer = NS::TransferPtr(buffer);
 	pool->count = p_query_count;
@@ -2414,8 +2423,14 @@ void RenderingDeviceDriverMetal::timestamp_query_pool_get_results(QueryPoolID p_
 	}
 	const MTL::CounterResultTimestamp *values = (const MTL::CounterResultTimestamp *)data->mutableBytes();
 	uint32_t got = MIN(count, uint32_t(data->length() / sizeof(MTL::CounterResultTimestamp)));
+	// (a sample the GPU didn't take reads as the one before it: no negative spans)
 	for (uint32_t i = 0; i < got; i++) {
-		r_results[i] = values[i].timestamp == MTL::CounterErrorValue ? 0 : values[i].timestamp;
+		uint64_t t = values[i].timestamp;
+		if (t == MTL::CounterErrorValue || t == 0) {
+			t = _timestamp_last;
+		}
+		r_results[i] = t;
+		_timestamp_last = t;
 	}
 	_calibrate_timestamps();
 }
@@ -2436,7 +2451,7 @@ void RenderingDeviceDriverMetal::command_timestamp_write(CommandBufferID p_cmd_b
 		return;
 	}
 	MDCommandBufferBase *cb = (MDCommandBufferBase *)(p_cmd_buffer.id);
-	cb->sample_timestamp(pool->buffer.get(), p_index);
+	cb->sample_timestamp(pool->buffer.get(), p_index, _timestamp_scratch.get());
 }
 
 #pragma mark - Labels

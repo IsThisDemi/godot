@@ -78,6 +78,8 @@ protected:
 	double _timestamp_ns_per_tick = 1.0;
 	uint64_t _timestamp_cpu0 = 0;
 	uint64_t _timestamp_gpu0 = 0;
+	uint64_t _timestamp_last = 0;
+	NS::SharedPtr<MTL::Buffer> _timestamp_scratch;
 	void _calibrate_timestamps();
 	/// frame_index is a cyclic counter derived from the current frame number modulo frame_count,
 	/// cycling through values from 0 to frame_count - 1
