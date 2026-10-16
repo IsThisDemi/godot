@@ -38,6 +38,8 @@
 #include <functiondiscoverykeys.h>
 #include <wrl/client.h>
 
+#include <avrt.h>
+
 using Microsoft::WRL::ComPtr;
 
 // Define IAudioClient3 if not already defined by MinGW headers
@@ -739,6 +741,15 @@ void AudioDriverWASAPI::write_sample(WORD format_tag, int bits_per_sample, BYTE 
 void AudioDriverWASAPI::thread_func(void *p_udata) {
 	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+	// The mix keeps its deadline (a buffer every ~10 ms) whatever the game does: a game's main
+	// thread runs in the "Games" class at critical priority (DisplayServerWindows), and a busy
+	// frame would otherwise starve this one, the sound crackling while the game stutters.
+	DWORD mmcss_index = 0;
+	HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcss_index);
+	if (mmcss) {
+		AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_HIGH);
+	}
+
 	AudioDriverWASAPI *ad = static_cast<AudioDriverWASAPI *>(p_udata);
 	uint32_t avail_frames = 0;
 	uint32_t write_ofs = 0;
@@ -974,6 +985,9 @@ void AudioDriverWASAPI::thread_func(void *p_udata) {
 		if (written_frames == 0 && read_frames == 0) {
 			OS::get_singleton()->delay_usec(1000);
 		}
+	}
+	if (mmcss) {
+		AvRevertMmThreadCharacteristics(mmcss);
 	}
 	CoUninitialize();
 }
