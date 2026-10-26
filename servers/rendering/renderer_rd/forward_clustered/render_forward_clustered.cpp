@@ -1120,6 +1120,11 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 			inst->transform_status = GeometryInstanceForwardClustered::TransformStatus::NONE;
 		}
 
+		// (Stellaro) A static model cut into clusters, each a surface of its own: each takes the
+		// level its own distance asks for (the near side of a big rock fine, its far side coarse).
+		// Skinned, multimesh and particle surfaces keep the instance's (their surfaces move).
+		const bool lod_per_surface = !p_render_data->scene_data->cam_orthogonal && surf && surf->next && !inst->mesh_instance.is_valid() && !(inst->base_flags & (INSTANCE_DATA_FLAG_MULTIMESH | INSTANCE_DATA_FLAG_PARTICLES));
+
 		while (surf) {
 			surf->sort.uses_forward_gi = 0;
 			surf->sort.uses_lightmap = 0;
@@ -1128,7 +1133,13 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
 			// LOD
 			if (p_render_data->scene_data->screen_mesh_lod_threshold > 0.0 && mesh_storage->mesh_surface_has_lod(surf->surface)) {
 				uint32_t indices = 0;
-				surf->sort.lod_index = mesh_storage->mesh_surface_get_lod(surf->surface, inst->lod_model_scale * inst->lod_bias, lod_distance * p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, indices);
+				float surface_lod_distance = lod_distance;
+				if (lod_per_surface) {
+					AABB surface_aabb = inst->transform.xform(mesh_storage->mesh_surface_get_aabb(surf->surface));
+					Vector3 camera_position = p_render_data->scene_data->main_cam_transform.origin;
+					surface_lod_distance = Vector3(0.0, 0.0, 0.0).max(surface_aabb.position - camera_position).max(camera_position - (surface_aabb.position + surface_aabb.size)).length();
+				}
+				surf->sort.lod_index = mesh_storage->mesh_surface_get_lod(surf->surface, inst->lod_model_scale * inst->lod_bias, surface_lod_distance * p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, indices);
 				if (p_render_data->render_info) {
 					indices = _indices_to_primitives(surf->primitive, indices);
 					if (p_render_list == RENDER_LIST_OPAQUE) { //opaque
