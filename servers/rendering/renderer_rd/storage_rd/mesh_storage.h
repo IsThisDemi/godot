@@ -452,6 +452,11 @@ public:
 		return surface->vertex_count;
 	}
 
+	_FORCE_INLINE_ AABB mesh_surface_get_aabb(void *p_surface) const {
+		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
+		return s->aabb;
+	}
+
 	_FORCE_INLINE_ bool mesh_surface_has_lod(void *p_surface) const {
 		Mesh::Surface *s = reinterpret_cast<Mesh::Surface *>(p_surface);
 		return s->lod_count > 0;
