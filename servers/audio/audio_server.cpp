@@ -476,6 +476,9 @@ void AudioServer::_mix_step() {
 			//  The channels correspond to output channels of the audio device, e.g. stereo or 5.1. To reduce needless nesting, this is done with a helper method named `_mix_step_for_channel`.
 			for (int channel_idx = 0; channel_idx < channel_count; channel_idx++) {
 				AudioFrame *channel_buf = thread_get_channel_mix_buffer(bus_idx, channel_idx);
+				if (!channel_buf) {
+					continue; // (a bus gone meanwhile: nothing to mix into)
+				}
 				// TODO: This `fading_out` check could be replaced with with an exponential fadeout of the samples from the lookahead buffer for more punchy results.
 				if (fading_out) {
 					bus_details.volume[idx][channel_idx] = AudioFrame(0, 0);
@@ -512,6 +515,9 @@ void AudioServer::_mix_step() {
 
 			for (int channel_idx = 0; channel_idx < channel_count; channel_idx++) {
 				AudioFrame *channel_buf = thread_get_channel_mix_buffer(bus_idx, channel_idx);
+				if (!channel_buf) {
+					continue; // (a bus gone meanwhile: nothing to mix into)
+				}
 				AudioFrame prev_channel_vol = playback->prev_bus_details->volume[idx][channel_idx];
 				// Fade out to silence. This could be replaced with an exponential fadeout of the samples from the lookahead buffer for more punchy results.
 				_mix_step_for_channel(channel_buf, buf, prev_channel_vol, AudioFrame(0, 0), playback->attenuation_filter_cutoff_hz.get(), playback->highshelf_gain.get(), &playback->filter_process[channel_idx * 2], &playback->filter_process[channel_idx * 2 + 1]);
@@ -663,6 +669,9 @@ void AudioServer::_mix_step() {
 			if (send) {
 				// If not master bus, send.
 				AudioFrame *target_buf = thread_get_channel_mix_buffer(send->index_cache, k);
+				if (!target_buf) {
+					continue;
+				}
 
 				for (uint32_t j = 0; j < buffer_size; j++) {
 					target_buf[j] += buf[j];
@@ -913,6 +922,9 @@ void AudioServer::add_bus(int p_at_pos) {
 	bus->bypass = false;
 	bus->volume_db = 0;
 
+	// (under the mixing thread's lock, as remove_bus: a game adding buses while sounds play
+	// otherwise has the mix read a bus list half changed, an index past its end, and crash)
+	lock();
 	bus_map[attempt] = bus;
 
 	if (p_at_pos == -1) {
@@ -920,6 +932,7 @@ void AudioServer::add_bus(int p_at_pos) {
 	} else {
 		buses.insert(p_at_pos, bus);
 	}
+	unlock();
 
 	AudioDriver::get_singleton()->add_sample_bus(p_at_pos);
 
@@ -936,6 +949,7 @@ void AudioServer::move_bus(int p_bus, int p_to_pos) {
 		return;
 	}
 
+	lock(); // (as add_bus)
 	Bus *bus = buses[p_bus];
 	buses.remove_at(p_bus);
 
@@ -946,6 +960,7 @@ void AudioServer::move_bus(int p_bus, int p_to_pos) {
 	} else {
 		buses.insert(p_to_pos - 1, bus);
 	}
+	unlock();
 
 	AudioDriver::get_singleton()->move_sample_bus(p_bus, p_to_pos);
 
