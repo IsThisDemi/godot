@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "rendering_server_default.h"
+#include "servers/rendering/renderer_rd/pipeline_hash_map_rd.h"
 
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
@@ -319,6 +320,8 @@ uint64_t RenderingServerDefault::get_rendering_info(RSE::RenderingInfo p_info) {
 		return RSG::scene->get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE);
 	} else if (p_info == RSE::RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW) {
 		return RSG::canvas_render->get_pipeline_compilations(RSE::PIPELINE_SOURCE_DRAW) + RSG::scene->get_pipeline_compilations(RSE::PIPELINE_SOURCE_DRAW);
+	} else if (p_info == RSE::RENDERING_INFO_PIPELINE_COMPILATIONS_IN_FLIGHT) {
+		return rd_pipeline_compilations_in_flight.get();
 	} else if (p_info == RSE::RENDERING_INFO_PIPELINE_COMPILATIONS_SPECIALIZATION) {
 		return RSG::canvas_render->get_pipeline_compilations(RSE::PIPELINE_SOURCE_SPECIALIZATION) + RSG::scene->get_pipeline_compilations(RSE::PIPELINE_SOURCE_SPECIALIZATION);
 	}

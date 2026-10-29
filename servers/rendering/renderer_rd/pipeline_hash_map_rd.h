@@ -43,6 +43,11 @@
 
 #define PRINT_PIPELINE_COMPILATION_KEYS 0
 
+// (Stellaro) Pipelines being compiled in the background right now, every map together
+// (RenderingServer.get_rendering_info(RENDERING_INFO_PIPELINE_COMPILATIONS_IN_FLIGHT)): a loading
+// screen can wait for them all to be done, so nothing waits for one in the game.
+inline SafeNumeric<uint32_t> rd_pipeline_compilations_in_flight;
+
 template <typename Key, typename CreationClass, typename CreationFunction>
 class PipelineHashMapRD {
 private:
@@ -147,8 +152,24 @@ public:
 		print_line("HASH:", p_key_hash, "SOURCE:", source_name);
 #endif
 
-		// Queue a background compilation task.
-		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_template_task(creation_object, creation_function, p_key, p_high_priority, "PipelineCompilation");
+		// Queue a background compilation task (counted while it runs, however it ends).
+		struct Job {
+			CreationClass *object;
+			CreationFunction function;
+			Key key;
+			static void run(void *p_job) {
+				Job *job = static_cast<Job *>(p_job);
+				(job->object->*job->function)(job->key);
+				memdelete(job);
+				rd_pipeline_compilations_in_flight.decrement();
+			}
+		};
+		rd_pipeline_compilations_in_flight.increment();
+		Job *job = memnew(Job);
+		job->object = creation_object;
+		job->function = creation_function;
+		job->key = p_key;
+		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_native_task(&Job::run, job, p_high_priority, "PipelineCompilation");
 		compilation_tasks.insert(p_key_hash, task_id);
 	}
 
