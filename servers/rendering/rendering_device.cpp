@@ -8120,7 +8120,11 @@ void RenderingDevice::_end_frame() {
 	_submit_transfer_barriers(command_buffer);
 
 	GodotProfileZoneGrouped(_profile_zone, "draw_graph.end");
-	draw_graph.end(RENDER_GRAPH_REORDER == 1, RENDER_GRAPH_FULL_BARRIERS == 1, command_buffer, frames[frame].command_buffer_pool);
+	// (Stellaro) STELLARO_NO_GRAPH_REORDER set: the commands run in the order recorded, so a GPU
+	// profile's timestamps (--gpu-profile) time the passes they are named after; reordered, a
+	// pass's work can land under another's name (slower: for profiling only)
+	static const bool reorder = !OS::get_singleton()->has_environment("STELLARO_NO_GRAPH_REORDER");
+	draw_graph.end(RENDER_GRAPH_REORDER == 1 && reorder, RENDER_GRAPH_FULL_BARRIERS == 1, command_buffer, frames[frame].command_buffer_pool);
 	GodotProfileZoneGrouped(_profile_zone, "driver->command_buffer_end");
 	driver->command_buffer_end(command_buffer);
 	GodotProfileZoneGrouped(_profile_zone, "driver->end_segment");
