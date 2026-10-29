@@ -2890,6 +2890,7 @@ void RendererSceneCull::_scene_cull_threaded(uint32_t p_thread, CullData *cull_d
 }
 
 void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cull_result, uint64_t p_from, uint64_t p_to) {
+	const real_t min_caster_texels = GLOBAL_GET_CACHED(real_t, "rendering/lights_and_shadows/directional_shadow/min_caster_texels");
 	uint64_t frame_number = RSG::rasterizer->get_frame_number();
 	float lightmap_probe_update_speed = RSG::light_storage->lightmap_get_probe_capture_update_speed() * RSG::rasterizer->get_frame_delta_time();
 
@@ -3243,6 +3244,16 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 						continue;
 					}
 					if (IN_FRUSTUM(cull_data.cull->shadows[j].cascades[k].frustum) && VIS_CHECK) {
+						// (Stellaro) beyond the first split, a caster smaller than a few of the split's
+						// texels casts no shadow anyone could see: left out (a distant split covers
+						// hundreds of studs, most of its casters' cost is small things)
+						if (k > 0 && min_caster_texels > 0) {
+							const real_t *bb = cull_data.scenario->instance_aabbs[i].bounds;
+							real_t extent = MAX(MAX(bb[3] - bb[0], bb[4] - bb[1]), bb[5] - bb[2]);
+							if (extent < cull_data.cull->shadows[j].cascades[k].shadow_texel_size * min_caster_texels) {
+								continue;
+							}
+						}
 						uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
 
 						if (((1 << base_type) & RSE::INSTANCE_GEOMETRY_MASK) && idata.flags & InstanceData::FLAG_CAST_SHADOWS && (LAYER_CHECK & cull_data.cull->shadows[j].caster_mask)) {
