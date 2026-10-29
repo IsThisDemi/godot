@@ -31,6 +31,7 @@
 #include "render_forward_clustered.h"
 
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -41,6 +42,24 @@
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server_default.h"
 #include "servers/rendering/storage/ltc_lut.gen.h"
+
+// (Stellaro) STELLARO_PRINT_PIPELINES set, or --print-pipelines after the "--": each pipeline
+// compiled while running printed with its shader and why (a surface added, or missing when drawn:
+// the frame waits for it), to find what a game's loading should have prepared.
+static bool print_pipelines() {
+	static const bool on = OS::get_singleton()->has_environment("STELLARO_PRINT_PIPELINES") ||
+			OS::get_singleton()->get_cmdline_user_args().find("--print-pipelines") != nullptr;
+	return on;
+}
+
+// A shader's name for those prints: its file, else its render_mode line (a material made in code).
+static String pipeline_shader_name(const String &p_path, const String &p_code) {
+	if (!p_path.is_empty()) {
+		return p_path;
+	}
+	int at = p_code.find("render_mode");
+	return at < 0 ? String("(code)") : p_code.substr(at, p_code.find(";", at) - at);
+}
 
 using namespace RendererSceneRenderImplementation;
 
@@ -520,7 +539,12 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
+				uint32_t compiled_before = print_pipelines() ? scene_shader.get_pipeline_compilations(RSE::PIPELINE_SOURCE_DRAW) : 0;
 				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, pipeline_key.ubershader, pipeline_source);
+				if (print_pipelines() && pipeline_key.ubershader && scene_shader.get_pipeline_compilations(RSE::PIPELINE_SOURCE_DRAW) != compiled_before) {
+					print_line(vformat("[pipelines] at draw (waited): shader %s, version %d, color pass flags %d, framebuffer format %d, vertex format %d, wireframe %s",
+							pipeline_shader_name(shader->path, shader->code), int(pipeline_key.version), int(pipeline_key.color_pass_flags), int64_t(pipeline_key.framebuffer_format_id), int64_t(pipeline_key.vertex_format_id), pipeline_key.wireframe ? "yes" : "no"));
+				}
 
 				if (pipeline_rd.is_valid()) {
 					pipeline_valid = true;
@@ -4841,7 +4865,12 @@ void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(Geom
 	surface.uses_transparent = uses_alpha_pass || uses_fade;
 	surface.uses_depth = (p_surface_cache->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE | GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW)) != 0;
 	surface.can_use_lightmap = p_surface_cache->owner->lightmap_instance.is_valid() || p_surface_cache->owner->lightmap_sh;
+	uint32_t before = print_pipelines() ? scene_shader.get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) : 0;
 	_mesh_compile_pipelines_for_surface(surface, p_global, RSE::PIPELINE_SOURCE_SURFACE);
+	if (print_pipelines() && scene_shader.get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) != before) {
+		print_line(vformat("[pipelines] surface: %d for shader %s (instance %s, transparent %s)", scene_shader.get_pipeline_compilations(RSE::PIPELINE_SOURCE_SURFACE) - before,
+				surface.shader ? pipeline_shader_name(surface.shader->path, surface.shader->code) : String("?"), surface.instanced ? "skinned" : "static", surface.uses_transparent ? "yes" : "no"));
+	}
 }
 
 void RenderForwardClustered::_update_dirty_geometry_instances() {
