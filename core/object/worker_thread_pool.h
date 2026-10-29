@@ -246,6 +246,8 @@ public:
 	TaskID add_task(const Callable &p_action, bool p_high_priority = false, const String &p_description = String(), bool p_pump_task = false);
 	TaskID add_task_bind(const Callable &p_action, bool p_high_priority = false, const String &p_description = String());
 
+	// (Stellaro) What each thread is doing now and how many tasks wait: a long wait's reason.
+	String describe_threads();
 	bool is_task_completed(TaskID p_task_id) const;
 	Error wait_for_task_completion(TaskID p_task_id);
 

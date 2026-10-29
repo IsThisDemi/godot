@@ -37,15 +37,18 @@
 #include "core/templates/rb_map.h"
 #include "core/templates/rb_set.h"
 #include "core/templates/rid.h"
+#include "core/os/os.h"
 #include "core/templates/vector.h"
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server_enums.h"
 
 #define PRINT_PIPELINE_COMPILATION_KEYS 0
 
-// (Stellaro) Pipelines being compiled in the background right now, every map together
-// (RenderingServer.get_rendering_info(RENDERING_INFO_PIPELINE_COMPILATIONS_IN_FLIGHT)): a loading
-// screen can wait for them all to be done, so nothing waits for one in the game.
+// (Stellaro) Pipelines a draw could wait for (high priority: the ubershaders) being compiled in
+// the background right now, every map together (RenderingServer.get_rendering_info(
+// RENDERING_INFO_PIPELINE_COMPILATIONS_IN_FLIGHT)): a loading screen can wait for them to be done,
+// so nothing waits for one in the game. (The specializations that follow, faster versions, are
+// compiled at low priority while the ubershaders draw, and are not counted.)
 inline SafeNumeric<uint32_t> rd_pipeline_compilations_in_flight;
 
 template <typename Key, typename CreationClass, typename CreationFunction>
@@ -157,18 +160,25 @@ public:
 			CreationClass *object;
 			CreationFunction function;
 			Key key;
+			bool counted = false;
 			static void run(void *p_job) {
 				Job *job = static_cast<Job *>(p_job);
 				(job->object->*job->function)(job->key);
+				bool counted = job->counted;
 				memdelete(job);
-				rd_pipeline_compilations_in_flight.decrement();
+				if (counted) {
+					rd_pipeline_compilations_in_flight.decrement();
+				}
 			}
 		};
-		rd_pipeline_compilations_in_flight.increment();
+		if (p_high_priority) {
+			rd_pipeline_compilations_in_flight.increment();
+		}
 		Job *job = memnew(Job);
 		job->object = creation_object;
 		job->function = creation_function;
 		job->key = p_key;
+		job->counted = p_high_priority;
 		WorkerThreadPool::TaskID task_id = WorkerThreadPool::get_singleton()->add_native_task(&Job::run, job, p_high_priority, "PipelineCompilation");
 		compilation_tasks.insert(p_key_hash, task_id);
 	}
@@ -192,6 +202,16 @@ public:
 		}
 
 		if (task_id_to_wait != WorkerThreadPool::INVALID_TASK_ID) {
+			// (Stellaro) a wait of seconds says what the pool's threads are doing (a deadlock's reason)
+			uint64_t started = OS::get_singleton()->get_ticks_msec();
+			bool told = false;
+			while (!WorkerThreadPool::get_singleton()->is_task_completed(task_id_to_wait)) {
+				if (!told && OS::get_singleton()->get_ticks_msec() - started > 3000) {
+					told = true;
+					print_line("[pipelines] waited 3 s for a pipeline: " + WorkerThreadPool::get_singleton()->describe_threads());
+				}
+				OS::get_singleton()->delay_usec(200);
+			}
 			WorkerThreadPool::get_singleton()->wait_for_task_completion(task_id_to_wait);
 		}
 	}

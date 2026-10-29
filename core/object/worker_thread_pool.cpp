@@ -390,6 +390,27 @@ WorkerThreadPool::TaskID WorkerThreadPool::add_task_bind(const Callable &p_actio
 	return _add_task(p_action, nullptr, nullptr, nullptr, p_high_priority, p_description, false);
 }
 
+String WorkerThreadPool::describe_threads() {
+	MutexLock lock(task_mutex);
+	int queued = 0, low_queued = 0;
+	for (SelfList<Task> *e = task_queue.first(); e; e = e->next()) {
+		queued++;
+	}
+	for (SelfList<Task> *e = low_priority_task_queue.first(); e; e = e->next()) {
+		low_queued++;
+	}
+	String out = vformat("%d queued, %d low priority queued, %d/%d low priority threads; threads:", queued, low_queued, low_priority_threads_used, max_low_priority_threads);
+	for (uint32_t i = 0; i < threads.size(); i++) {
+		const Task *t = threads[i].current_task;
+		String what = t ? (t->description.is_empty() ? String("(task)") : t->description) : String("idle");
+		if (threads[i].awaited_task) {
+			what += threads[i].awaited_task == ThreadData::YIELDING ? " (yielding)" : " (waiting for a task)";
+		}
+		out += " [" + what + "]";
+	}
+	return out;
+}
+
 bool WorkerThreadPool::is_task_completed(TaskID p_task_id) const {
 	MutexLock task_lock(task_mutex);
 	const Task *const *taskp = tasks.getptr(p_task_id);
@@ -435,6 +456,23 @@ Error WorkerThreadPool::wait_for_task_completion(TaskID p_task_id) {
 		return ERR_BUSY;
 	}
 
+	// (Stellaro) The task waited for is still in the low priority queue: it runs now, as a normal
+	// one. Otherwise the waiter can wait for good: low priority tasks get few threads (one on a
+	// 6-thread CPU), and when those are taken by tasks that themselves wait for the waiter (a model
+	// read back from the RenderingServer, which answers on the main thread, while the main thread
+	// waits for a pipeline compiled at low priority) nothing moves, the other threads idle.
+	if (task->low_priority && task->task_elem.in_list()) {
+		for (SelfList<Task> *e = low_priority_task_queue.first(); e; e = e->next()) {
+			if (e == &task->task_elem) {
+				low_priority_task_queue.remove(e);
+				task->low_priority = false;
+				task_queue.add(&task->task_elem); // (at the front: it is awaited)
+				_notify_threads(caller_pool_thread, 1, 0);
+				break;
+			}
+		}
+	}
+
 	if (caller_pool_thread) {
 		task->waiting_pool++;
 	} else {
@@ -452,7 +490,20 @@ Error WorkerThreadPool::wait_for_task_completion(TaskID p_task_id) {
 		}
 	} else {
 		task_mutex.unlock();
-		task->done_semaphore.wait();
+		// (Stellaro) a wait of seconds says what it waits for and what the threads are doing (a
+		// deadlock's reason), once
+		if (!task->done_semaphore.try_wait()) {
+			uint64_t started = OS::get_singleton()->get_ticks_msec();
+			bool told = false;
+			while (!task->done_semaphore.try_wait()) {
+				if (!told && OS::get_singleton()->get_ticks_msec() - started > 3000) {
+					told = true;
+					String what = task->description.is_empty() ? String("a task") : task->description;
+					print_line(vformat("[worker pool] %s thread waited 3 s for %s: %s", Thread::is_main_thread() ? "the main" : "a", what, describe_threads()));
+				}
+				OS::get_singleton()->delay_usec(200);
+			}
+		}
 		task_mutex.lock();
 		task->waiting_user--;
 		if (task->waiting_pool == 0 && task->waiting_user == 0) {
